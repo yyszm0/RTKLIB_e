@@ -2,31 +2,28 @@
 set -euo pipefail
 
 # ============================================================
-# Convert all Septentrio SBF files under data_sbf/ to RINEX.
+# Convert all Septentrio SBF files directly under data_sbf/ to RINEX.
 #
-# Input directory inside mounted project:
-#   /work/data_sbf
+# Input:
+#   /work/data_sbf/*.sbf
 #
 # Output:
 #   /work/data_sbf/MAIN/*.obs, *.nav
 #   /work/data_sbf/AUX1/*.obs
 #
-# Classification rule:
-#   filename containing "aux1" or "AUX1" -> AUX1
-#   all others                         -> MAIN
+# Important:
+#   One SBF contains both MAIN and AUX1 data.
+#   Therefore, each SBF is converted twice:
+#     1) default antenna -> MAIN
+#     2) -ro "-AUX1"    -> AUX1
 # ============================================================
 
 DATA_DIR="${DATA_DIR:-/work/data_sbf}"
 MAIN_DIR="${MAIN_DIR:-${DATA_DIR}/MAIN}"
 AUX1_DIR="${AUX1_DIR:-${DATA_DIR}/AUX1}"
 
-# Optional time filter. Example:
-#   START_TIME="2026/06/11 07:44:40"
-#   END_TIME="2026/06/11 08:00:00"
 START_TIME="${START_TIME:-}"
 END_TIME="${END_TIME:-}"
-
-# Optional RINEX version. 3.04 is a safe default for multi-GNSS.
 RINEX_VERSION="${RINEX_VERSION:-3.04}"
 
 mkdir -p "$MAIN_DIR" "$AUX1_DIR"
@@ -42,13 +39,13 @@ if [ ! -d "$DATA_DIR" ]; then
     exit 1
 fi
 
-mapfile -d '' SBF_FILES < <(find "$DATA_DIR" -type f \( -iname '*.sbf' -o -iname '*.SBF' \) \
-    ! -path "$MAIN_DIR/*" \
-    ! -path "$AUX1_DIR/*" \
-    -print0 | sort -z)
+# data_sbf直下のSBFだけ対象にする
+mapfile -d '' SBF_FILES < <(
+    find "$DATA_DIR" -maxdepth 1 -type f \( -iname '*.sbf' -o -iname '*.SBF' \) -print0 | sort -z
+)
 
 if [ "${#SBF_FILES[@]}" -eq 0 ]; then
-    echo "No .sbf files found under: $DATA_DIR"
+    echo "No .sbf files found directly under: $DATA_DIR"
     exit 0
 fi
 
@@ -76,44 +73,45 @@ for sbf in "${SBF_FILES[@]}"; do
     base="$(basename "$sbf")"
     stem="${base%.*}"
 
-    lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+    main_obs="$MAIN_DIR/${stem}.obs"
+    main_nav="$MAIN_DIR/${stem}.nav"
+    aux1_obs="$AUX1_DIR/${stem}.obs"
 
-    if [[ "$lower" == *aux1* ]]; then
-        out_obs="$AUX1_DIR/${stem}.obs"
-        echo "[AUX1] $sbf"
-        echo "       -> $out_obs"
+    mapfile -d '' TIME_ARGS < <(build_time_args)
 
-        mapfile -d '' TIME_ARGS < <(build_time_args)
-        convbin \
-            -r sbf \
-            -v "$RINEX_VERSION" \
-            "${TIME_ARGS[@]}" \
-            -o "$out_obs" \
-            "$sbf"
+    echo "[MAIN] $sbf"
+    echo "       -> $main_obs"
+    echo "       -> $main_nav"
 
-        # AUX1 only needs .obs. Remove nav-like files if convbin created them.
-        rm -f "$AUX1_DIR/${stem}.nav" \
-              "$AUX1_DIR/${stem}.gnav" \
-              "$AUX1_DIR/${stem}.hnav" \
-              "$AUX1_DIR/${stem}.qnav" \
-              "$AUX1_DIR/${stem}.lnav" \
-              "$AUX1_DIR/${stem}.sbs"
-    else
-        out_obs="$MAIN_DIR/${stem}.obs"
-        out_nav="$MAIN_DIR/${stem}.nav"
-        echo "[MAIN] $sbf"
-        echo "       -> $out_obs"
-        echo "       -> $out_nav"
+    convbin \
+        -r sbf \
+        -v "$RINEX_VERSION" \
+        "${TIME_ARGS[@]}" \
+        -o "$main_obs" \
+        -n "$main_nav" \
+        "$sbf"
 
-        mapfile -d '' TIME_ARGS < <(build_time_args)
-        convbin \
-            -r sbf \
-            -v "$RINEX_VERSION" \
-            "${TIME_ARGS[@]}" \
-            -o "$out_obs" \
-            -n "$out_nav" \
-            "$sbf"
-    fi
+    echo
+
+    echo "[AUX1] $sbf"
+    echo "       -> $aux1_obs"
+
+    convbin \
+        -r sbf \
+        -v "$RINEX_VERSION" \
+        -ro "-AUX1" \
+        "${TIME_ARGS[@]}" \
+        -o "$aux1_obs" \
+        "$sbf"
+
+    # AUX1ではobsだけ残す
+    rm -f "$AUX1_DIR/${stem}.nav" \
+          "$AUX1_DIR/${stem}.gnav" \
+          "$AUX1_DIR/${stem}.hnav" \
+          "$AUX1_DIR/${stem}.qnav" \
+          "$AUX1_DIR/${stem}.lnav" \
+          "$AUX1_DIR/${stem}.sbs"
+
     echo
 done
 
