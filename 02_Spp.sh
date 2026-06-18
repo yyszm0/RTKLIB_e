@@ -120,6 +120,7 @@ for obs_file in "${obs_files[@]}"; do
 
     if rnx2rtkp \
         -p 0 \
+        -sys GRE \
         -y 2 \
         -o "$pos_file" \
         "$obs_file" \
